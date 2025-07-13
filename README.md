@@ -41,7 +41,7 @@ python3 bot.py
 ## ☕ Buy Me a Coffee
 
 * **EVM:** `0x1B19167193553f125338d42432f61CBEAd2d4339`
-* 
+  
 
 ## ⚠️ Disclaimer
 
