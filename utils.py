@@ -2,7 +2,7 @@ from datetime import datetime
 import os
 from colorama import Fore, Style
 import platform
-import random # Pastikan ini ada
+import random
 
 def clear_console():
     os.system('cls' if platform.system() == 'Windows' else 'clear')
@@ -19,7 +19,7 @@ def format_time_duration(seconds):
 
 def load_json_data(filename):
     try:
-        import json # Pindahkan import json ke sini jika belum ada di file utils.py Anda
+        import json
         with open(filename, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
@@ -30,14 +30,14 @@ def load_json_data(filename):
         return None
 
 def get_masked_address(key_entry: str):
-    from eth_account import Account # Pindahkan import Account ke sini jika belum ada di file utils.py Anda
+    from eth_account import Account
     try:
-        # Asumsi key_entry adalah private key heksadesimal 64 karakter
+        
         account = Account.from_key(key_entry)
         wallet_address = account.address
         return wallet_address, f"{wallet_address[:6]}...{wallet_address[-4:]}"
     except Exception:
-        # Jika bukan private key yang valid, tampilkan sebagian dari string aslinya
+        
         return None, f"{key_entry[:6]}...{key_entry[-4:]}" if len(key_entry) >= 10 else "Invalid Key"
 
 def check_proxy_format(proxy_url: str):
