@@ -25,11 +25,7 @@ pip install -r requirements.txt
 * Example: `0x87abc123...`
 * Save with `CTRL + X`, then `Y`, then `Enter`
 
-### 🌐 (Optional) Proxy Support
-
-```bash
-nano proxy.txt
-```
+### 🌐 (Optional) `Proxy Support`
 
 ```
 http://user:pass@ip:port
