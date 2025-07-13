@@ -38,6 +38,11 @@ socks5://user:pass@ip:port
 python3 bot.py
 ```
 
+## ☕ Buy Me a Coffee
+
+* **EVM:** `0x1B19167193553f125338d42432f61CBEAd2d4339`
+* 
+
 ## ⚠️ Disclaimer
 
 This project is for educational and automation research purposes only.
