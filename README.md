@@ -1,6 +1,6 @@
 ## 📦 Warden Protocol 
 
-     Features
+  Features        
 
 - 🤖 **Auto Chat with AI**
 - 🎮 **Auto Playing Game**
