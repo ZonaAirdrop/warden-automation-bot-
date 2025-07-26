@@ -37,6 +37,10 @@ class WardenAutomation:
         self.current_proxy_index = 0
         self.account_proxy_assignments = {}
         self.auth_tokens = {}
+        
+        # Tambahkan variabel untuk menyimpan pilihan proxy dari pengguna
+        self.use_private_proxy = False
+        self.should_rotate_proxies = False
 
     def display_welcome_screen(self):
         clear_console()
@@ -46,17 +50,16 @@ class WardenAutomation:
         
         print(f"{Fore.GREEN + Style.BRIGHT}")
         print("  ┌─────────────────────────────────┐")
-        print("  │     [ W A R D E N  B O T ]      │")
+        print("  │    [ W A R D E N  B O T ]     │")
         print(f"  │                                 │")
-        print(f"  │     {Fore.YELLOW}{time_str} {date_str}{Fore.GREEN}      │")
-        print("  │                                 │")
+        print(f"  │    {Fore.YELLOW}{time_str} {date_str}{Fore.GREEN}      │")
+        print(f"  │                                 │")
         print("  │   Automated Protocol Utility    │")
         print(f"  │ {Fore.WHITE}   by ZonaAirdrop {Fore.GREEN}(@ZonaAirdr0p){Style.RESET_ALL} │")
         print("  └─────────────────────────────────┘\n")
         time.sleep(1)
 
-
-    async def load_proxies_from_file(self, use_proxy_mode: bool):
+    async def load_proxies_from_file(self): # Hapus parameter use_proxy_mode karena sudah di self.
         filename = "proxy.txt"
         try:
             if not os.path.exists(filename):
@@ -73,26 +76,31 @@ class WardenAutomation:
                 f"{Fore.YELLOW + Style.BRIGHT}Loaded Proxies: {Style.RESET_ALL}"
                 f"{Fore.WHITE + Style.BRIGHT}{len(self.proxy_list)}{Style.RESET_ALL}"
             )
-        
+            
         except Exception as e:
             log_message(f"{Fore.RED + Style.BRIGHT}Failed To Load Proxies: {e}{Style.RESET_ALL}")
             self.proxy_list = []
 
     def get_next_available_proxy(self, account_address):
+        if not self.proxy_list:
+            return None # Kembali ke None jika tidak ada proxy
+        
+        # Perbaiki agar tidak selalu assign proxy baru jika sudah ada
         if account_address not in self.account_proxy_assignments:
-            if not self.proxy_list:
-                return None
             proxy_url = check_proxy_format(self.proxy_list[self.current_proxy_index])
             self.account_proxy_assignments[account_address] = proxy_url
             self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxy_list)
+        
         return self.account_proxy_assignments[account_address]
 
     def rotate_assigned_proxy(self, account_address):
         if not self.proxy_list:
             return None
-        proxy_url = check_proxy_format(self.proxy_list[self.current_proxy_index])
-        self.account_proxy_assignments[account_address] = proxy_url
+        
+        # Dapatkan indeks proxy berikutnya
         self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxy_list)
+        proxy_url = check_proxy_format(self.proxy_list[self.current_proxy_index])
+        self.account_proxy_assignments[account_address] = proxy_url # Assign proxy baru
         return proxy_url
         
     def generate_siwe_payload(self, eth_account_key: str, wallet_address: str, nonce_value: str):
@@ -142,7 +150,7 @@ class WardenAutomation:
             return payload
         except Exception as e:
             return None
-        
+            
     def get_user_choice_for_proxy(self):
         while True:
             try:
@@ -174,9 +182,12 @@ class WardenAutomation:
                     break
                 else:
                     log_message(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter 'y' or 'n'.{Style.RESET_ALL}")
+        
+        self.use_private_proxy = (choice_input == 1) # Simpan pilihan di instance
+        self.should_rotate_proxies = should_rotate # Simpan pilihan di instance
 
-        return choice_input, should_rotate
-    
+        return self.use_private_proxy, self.should_rotate_proxies
+        
     async def verify_connection(self, proxy_addr=None):
         connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
         try:
@@ -189,84 +200,209 @@ class WardenAutomation:
                 f"{Fore.RED}Connection Status: Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
             )
             return None
-    
-    async def request_privy_nonce(self, wallet_address: str, proxy_addr=None, retries=5):
+            
+    async def request_privy_nonce(self, wallet_address: str, retries=5):
         url = f"{self.PRIVY_API_ENDPOINT}/api/v1/siwe/init"
         data = json.dumps({"address":wallet_address})
-        headers = {
-            **self.privy_headers_map[wallet_address],
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json"
-        }
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent dan Privy-Ca-Id setiap percobaan untuk lebih menyamarkan
+            headers = {
+                "Accept": "application/json",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Privy-App-Id": "cm7f00k5c02tibel0m4o9tdy1",
+                "Privy-Ca-Id": str(uuid.uuid4()), # Rotasi ini
+                "Privy-Client": "react-auth:2.13.8",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Storage-Access": "active",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "Content-Length": str(len(data)),
+                "Content-Type": "application/json"
+            }
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for Nonce Retrieval using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+            
+            # Penundaan acak sebelum setiap permintaan
+            sleep_time = random.randint(10, 30) # Sesuaikan rentang ini jika masih diblokir
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before nonce request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.post(url=url, headers=headers, data=data, ssl=False) as response:
-                        response.raise_for_status()
+                        # Deteksi 429 atau indikasi CAPTCHA lebih awal
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}Nonce Retrieval: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90)) # Jeda lebih lama setelah 429
+                            continue # Coba lagi dengan proxy baru atau tanpa proxy jika tidak ada lagi
+                        
+                        # Contoh deteksi CAPTCHA (mungkin perlu disesuaikan dengan respons asli)
+                        if response.headers.get('Content-Type', '').startswith('text/html'):
+                            html_content = await response.text()
+                            if "Checking that you are a human..." in html_content or "captcha" in html_content.lower():
+                                log_message(f"{Fore.RED}CAPTCHA detected for Nonce Retrieval! Manual intervention or CAPTCHA solving service needed. Skipping account.{Style.RESET_ALL}")
+                                # Anda bisa menambahkan logika untuk memanggil layanan pemecah CAPTCHA di sini
+                                return None # Gagal untuk akun ini
+                        
+                        response.raise_for_status() # Akan memunculkan HTTPError untuk status kode error lainnya
                         return await response.json()
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.RED}Nonce Retrieval Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.RED}Nonce Retrieval Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(15, 45)) # Jeda sebelum retry umum
+                continue
+            except Exception as e:
+                log_message(f"{Fore.RED}Nonce Retrieval Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(15, 45)) # Jeda sebelum retry umum
+                continue
 
+        log_message(f"{Fore.RED}Failed to retrieve nonce after {retries} attempts. Skipping account.{Style.RESET_ALL}")
         return None
-    
-    async def authenticate_with_privy(self, eth_account_key: str, wallet_address: str, nonce_value: str, proxy_addr=None, retries=5):
+            
+    async def authenticate_with_privy(self, eth_account_key: str, wallet_address: str, nonce_value: str, retries=5):
         url = f"{self.PRIVY_API_ENDPOINT}/api/v1/siwe/authenticate"
-        data = json.dumps(self.generate_siwe_payload(eth_account_key, wallet_address, nonce_value))
-        headers = {
-            **self.privy_headers_map[wallet_address],
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json"
-        }
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent dan Privy-Ca-Id setiap percobaan
+            headers = {
+                "Accept": "application/json",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Privy-App-Id": "cm7f00k5c02tibel0m4o9tdy1",
+                "Privy-Ca-Id": str(uuid.uuid4()), # Rotasi ini
+                "Privy-Client": "react-auth:2.13.8",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Storage-Access": "active",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "Content-Type": "application/json"
+            }
+            
+            payload = self.generate_siwe_payload(eth_account_key, wallet_address, nonce_value)
+            if payload is None:
+                log_message(f"{Fore.RED}Failed to generate SIWE payload.{Style.RESET_ALL}")
+                return None
+            data = json.dumps(payload)
+            headers["Content-Length"] = str(len(data)) # Update Content-Length setelah data digenerate
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for Authentication using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+
+            # Penundaan acak sebelum setiap permintaan
+            sleep_time = random.randint(10, 30) # Sesuaikan rentang ini jika masih diblokir
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before authentication request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.post(url=url, headers=headers, data=data, ssl=False) as response:
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}Authentication: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90))
+                            continue
+                        
+                        if response.headers.get('Content-Type', '').startswith('text/html'):
+                            html_content = await response.text()
+                            if "Checking that you are a human..." in html_content or "captcha" in html_content.lower():
+                                log_message(f"{Fore.RED}CAPTCHA detected for Authentication! Manual intervention or CAPTCHA solving service needed. Skipping account.{Style.RESET_ALL}")
+                                return None
+                        
                         response.raise_for_status()
                         return await response.json()
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.RED}Authentication Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.RED}Authentication Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(15, 45))
+                continue
+            except Exception as e:
+                log_message(f"{Fore.RED}Authentication Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(15, 45))
+                continue
 
+        log_message(f"{Fore.RED}Failed to authenticate after {retries} attempts. Skipping account.{Style.RESET_ALL}")
         return None
-    
-    async def fetch_user_token_data(self, wallet_address: str, proxy_addr=None, retries=5):
+            
+    async def fetch_user_token_data(self, wallet_address: str, retries=5):
         url = f"{self.CORE_API_ENDPOINT}/tokens/user/me"
-        headers = {
-            **self.core_headers_map[wallet_address],
-            "Authorization": f"Bearer {self.auth_tokens[wallet_address]}"
-        }
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent
+            headers = {
+                "Accept": "*/*",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "Authorization": f"Bearer {self.auth_tokens[wallet_address]}"
+            }
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for Token Data using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+
+            sleep_time = random.randint(5, 15) # Penundaan yang lebih pendek untuk request ini, tapi tetap acak
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before token data request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.get(url=url, headers=headers, ssl=False) as response:
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}Balance Fetch: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90))
+                            continue
+                        
                         response.raise_for_status()
                         return await response.json()
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.RED}Balance Fetch Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.RED}Balance Fetch Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
+            except Exception as e:
+                log_message(f"{Fore.RED}Balance Fetch Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
 
         return None
-    
-    async def submit_checkin_activity(self, wallet_address: str, proxy_addr=None, retries=5):
+            
+    async def submit_checkin_activity(self, wallet_address: str, retries=5):
         url = f"{self.CORE_API_ENDPOINT}/tokens/activity"
         data = json.dumps({
             "activityType":"LOGIN",
@@ -275,31 +411,62 @@ class WardenAutomation:
                 "timestamp":datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
             }
         })
-        headers = {
-            **self.core_headers_map[wallet_address],
-            "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json"
-        }
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent
+            headers = {
+                "Accept": "*/*",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
+                "Content-Length": str(len(data)),
+                "Content-Type": "application/json"
+            }
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for Check-in using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+
+            sleep_time = random.randint(5, 15)
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before check-in request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.post(url=url, headers=headers, data=data, ssl=False) as response:
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}Check-in: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90))
+                            continue
+                        
                         response.raise_for_status()
                         return await response.json()
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.RED}Check-in Activity Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.RED}Check-in Activity Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
+            except Exception as e:
+                log_message(f"{Fore.RED}Check-in Activity Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
 
         return None
-    
-    async def submit_game_activity(self, wallet_address: str, proxy_addr=None, retries=5):
+            
+    async def submit_game_activity(self, wallet_address: str, retries=5):
         url = f"{self.CORE_API_ENDPOINT}/tokens/activity"
         data = json.dumps({
             "activityType":"GAME_PLAY",
@@ -308,73 +475,160 @@ class WardenAutomation:
                 "timestamp":datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
             }
         })
-        headers = {
-            **self.core_headers_map[wallet_address],
-            "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json"
-        }
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent
+            headers = {
+                "Accept": "*/*",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
+                "Content-Length": str(len(data)),
+                "Content-Type": "application/json"
+            }
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for Game Activity using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+
+            sleep_time = random.randint(5, 15)
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before game activity request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.post(url=url, headers=headers, data=data, ssl=False) as response:
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}Game Activity: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90))
+                            continue
+                        
                         response.raise_for_status()
                         return await response.json()
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.RED}Game Activity Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.RED}Game Activity Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
+            except Exception as e:
+                log_message(f"{Fore.RED}Game Activity Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
 
         return None
-    
-    async def initialize_agent_thread(self, wallet_address: str, proxy_addr=None, retries=5):
+            
+    async def initialize_agent_thread(self, wallet_address: str, retries=5):
         url = f"{self.AI_AGENTS_API_ENDPOINT}/threads"
         data = json.dumps({"metadata":{}})
-        headers = {
-            **self.agents_headers_map[wallet_address],
-            "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json"
-        }
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent
+            headers = {
+                "Accept": "*/*",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "X-Api-Key": "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",
+                "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
+                "Content-Length": str(len(data)),
+                "Content-Type": "application/json"
+            }
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for AI Chat Init using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+
+            sleep_time = random.randint(5, 15)
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before AI chat init request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.post(url=url, headers=headers, data=data, ssl=False) as response:
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}AI Chat Init: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90))
+                            continue
+                        
                         response.raise_for_status()
                         return await response.json()
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.YELLOW}[AI Chat Init]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.YELLOW}[AI Chat Init]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
+            except Exception as e:
+                log_message(f"{Fore.YELLOW}[AI Chat Init]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
 
         return None
 
-    async def execute_agent_stream(self, wallet_address: str, thread_id: str, message_content: str, proxy_addr=None, retries=5):
+    async def execute_agent_stream(self, wallet_address: str, thread_id: str, message_content: str, retries=5):
         url = f"{self.AI_AGENTS_API_ENDPOINT}/threads/{thread_id}/runs/stream"
         data = json.dumps(self.generate_chat_stream_payload(message_content))
-        headers = {
-            **self.agents_headers_map[wallet_address],
-            "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json"
-        }
-
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent
+            headers = {
+                "Accept": "*/*",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "X-Api-Key": "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",
+                "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
+                "Content-Length": str(len(data)),
+                "Content-Type": "application/json"
+            }
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for AI Chat Response using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+
+            sleep_time = random.randint(5, 15)
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before AI chat response request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.post(url=url, headers=headers, data=data, ssl=False) as response:
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}AI Chat Response: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90))
+                            continue
+                        
                         response.raise_for_status()
                         result_content = ""
 
@@ -393,20 +647,27 @@ class WardenAutomation:
                                             result_content += msg.get("content", "")
                                 except json.JSONDecodeError:
                                     continue
-                        
+                                
                         return result_content if result_content else None
 
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.YELLOW}[AI Chat Response]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.YELLOW}[AI Chat Response]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
+            except Exception as e:
+                log_message(f"{Fore.YELLOW}[AI Chat Response]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
 
         return None
-    
-    async def submit_chat_activity(self, wallet_address: str, message_length: int, proxy_addr=None, retries=5):
+            
+    async def submit_chat_activity(self, wallet_address: str, message_length: int, retries=5):
         url = f"{self.CORE_API_ENDPOINT}/tokens/activity"
         data = json.dumps({
             "activityType":"CHAT_INTERACTION",
@@ -416,33 +677,64 @@ class WardenAutomation:
                 "timestamp":datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
             }
         })
-        headers = {
-            **self.core_headers_map[wallet_address],
-            "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json"
-        }
-        await asyncio.sleep(3)
+        
         for attempt in range(retries):
-            connector = ProxyConnector.from_url(proxy_addr) if proxy_addr else None
+            # Rotasi User-Agent
+            headers = {
+                "Accept": "*/*",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Origin": "https://app.wardenprotocol.org",
+                "Referer": "https://app.wardenprotocol.org/", 
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
+                "User-Agent": get_random_user_agent(), # Rotasi User-Agent
+                "Authorization": f"Bearer {self.auth_tokens[wallet_address]}",
+                "Content-Length": str(len(data)),
+                "Content-Type": "application/json"
+            }
+
+            current_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            display_proxy_info = current_proxy if current_proxy else "None (Direct)"
+            log_message(f"{Fore.WHITE}Attempt {attempt + 1}/{retries} for Chat Activity using Proxy: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}")
+
+            sleep_time = random.randint(5, 15)
+            log_message(f"{Fore.CYAN}Waiting {sleep_time} seconds before chat activity request...{Style.RESET_ALL}")
+            await asyncio.sleep(sleep_time)
+
+            connector = ProxyConnector.from_url(current_proxy) if current_proxy else None
             try:
                 async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
                     async with session.post(url=url, headers=headers, data=data, ssl=False) as response:
+                        if response.status == 429:
+                            log_message(f"{Fore.YELLOW}Chat Activity: Too Many Requests (429) detected. Rotating proxy...{Style.RESET_ALL}")
+                            if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                                self.rotate_assigned_proxy(wallet_address)
+                                await asyncio.sleep(random.randint(30, 90))
+                            continue
+                        
                         response.raise_for_status()
                         return await response.json()
-            except (Exception, ClientResponseError) as e:
-                if attempt < retries - 1:
-                    await asyncio.sleep(5)
-                    continue
-                log_message(
-                    f"{Fore.YELLOW}[AI Chat Send]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})"
-                )
+            except ClientResponseError as e:
+                log_message(f"{Fore.YELLOW}[AI Chat Send]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}Status: {e.status}, Message: {str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
+            except Exception as e:
+                log_message(f"{Fore.YELLOW}[AI Chat Send]: {Fore.RED}Failed {Style.RESET_ALL}({Fore.YELLOW}{str(e)}{Style.RESET_ALL})")
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
+                    log_message(f"{Fore.YELLOW}Rotating proxy after error...{Style.RESET_ALL}")
+                    self.rotate_assigned_proxy(wallet_address)
+                await asyncio.sleep(random.randint(10, 30))
+                continue
 
         return None
-            
-    async def handle_proxy_check(self, account_address: str, use_proxy_option: bool, rotate_proxy_option: bool):
+                
+    async def handle_proxy_check(self, account_address: str): # Hapus parameter use_proxy_option dan rotate_proxy_option
         while True:
-            active_proxy = self.get_next_available_proxy(account_address) if use_proxy_option and self.proxy_list else None
+            active_proxy = self.get_next_available_proxy(account_address) if self.use_private_proxy and self.proxy_list else None
             display_proxy_info = active_proxy if active_proxy else "None (Direct)"
             log_message(
                 f"{Fore.WHITE}Proxy Used: {Fore.YELLOW}{display_proxy_info}{Style.RESET_ALL}"
@@ -450,29 +742,30 @@ class WardenAutomation:
 
             is_proxy_valid = await self.verify_connection(active_proxy)
             if not is_proxy_valid:
-                if rotate_proxy_option and use_proxy_option and self.proxy_list:
+                if self.should_rotate_proxies and self.use_private_proxy and self.proxy_list:
                     active_proxy = self.rotate_assigned_proxy(account_address)
                     log_message(f"{Fore.YELLOW}Switching proxy for {get_masked_address(account_address)[1]}...{Style.RESET_ALL}")
                     await asyncio.sleep(5)
                     continue
-                elif use_proxy_option and not self.proxy_list:
+                elif self.use_private_proxy and not self.proxy_list:
                     log_message(f"{Fore.RED}No proxies available, proceeding without proxy.{Style.RESET_ALL}")
+                    self.use_private_proxy = False # Matikan penggunaan proxy jika tidak ada
                     return True
                 else:
                     return False
             
             return True
 
-    async def perform_user_login(self, private_key: str, wallet_address: str, use_proxy_option: bool, rotate_proxy_option: bool):
-        is_connected = await self.handle_proxy_check(wallet_address, use_proxy_option, rotate_proxy_option)
+    async def perform_user_login(self, private_key: str, wallet_address: str): # Hapus parameter proxy option
+        is_connected = await self.handle_proxy_check(wallet_address)
         if is_connected:
-            assigned_proxy = self.get_next_available_proxy(wallet_address) if use_proxy_option else None
-
-            nonce_response = await self.request_privy_nonce(wallet_address, assigned_proxy)
+            # Tidak perlu lagi passing assigned_proxy ke setiap fungsi,
+            # karena fungsi request API sudah mengambilnya sendiri dari self.get_next_available_proxy
+            nonce_response = await self.request_privy_nonce(wallet_address)
             if nonce_response:
                 retrieved_nonce = nonce_response["nonce"]
 
-                login_response = await self.authenticate_with_privy(private_key, wallet_address, retrieved_nonce, assigned_proxy)
+                login_response = await self.authenticate_with_privy(private_key, wallet_address, retrieved_nonce)
                 if login_response:
                     self.auth_tokens[wallet_address] = login_response["token"]
 
@@ -483,12 +776,13 @@ class WardenAutomation:
 
         return False
 
-    async def process_wallet_activities(self, private_key: str, wallet_address: str, chat_questions: list, use_proxy_option: bool, rotate_proxy_option: bool):
-        login_successful = await self.perform_user_login(private_key, wallet_address, use_proxy_option, rotate_proxy_option)
+    async def process_wallet_activities(self, private_key: str, wallet_address: str, chat_questions: list): # Hapus parameter proxy option
+        login_successful = await self.perform_user_login(private_key, wallet_address)
         if login_successful:
-            assigned_proxy = self.get_next_available_proxy(wallet_address) if use_proxy_option else None
+            # assigned_proxy = self.get_next_available_proxy(wallet_address) if self.use_private_proxy else None
+            # Tidak perlu variabel assigned_proxy di sini lagi, setiap fungsi request API sudah mengambilnya sendiri
 
-            user_data = await self.fetch_user_token_data(wallet_address, assigned_proxy)
+            user_data = await self.fetch_user_token_data(wallet_address)
             if user_data:
                 current_balance = user_data.get("token", {}).get("pointsTotal", 0)
 
@@ -496,7 +790,7 @@ class WardenAutomation:
                     f"{Fore.WHITE}Current Balance: {Fore.YELLOW}{current_balance} PUMPs{Style.RESET_ALL}"
                 )
 
-            checkin_result = await self.submit_checkin_activity(wallet_address, assigned_proxy)
+            checkin_result = await self.submit_checkin_activity(wallet_address)
             if checkin_result:
                 activity_id_checkin = checkin_result.get("activityId", None)
 
@@ -510,7 +804,7 @@ class WardenAutomation:
                         f"{Fore.YELLOW}Daily Check-In: {message_checkin}{Style.RESET_ALL}"
                     )
 
-            game_result = await self.submit_game_activity(wallet_address, assigned_proxy)
+            game_result = await self.submit_game_activity(wallet_address)
             if game_result:
                 activity_id_game = game_result.get("activityId", None)
                 if activity_id_game:
@@ -527,7 +821,7 @@ class WardenAutomation:
 
             ai_chat_completed = False
             for _ in range(3):
-                thread_info = await self.initialize_agent_thread(wallet_address, assigned_proxy)
+                thread_info = await self.initialize_agent_thread(wallet_address)
                 if thread_info:
                     thread_identifier = thread_info.get("thread_id")
                     chosen_message = random.choice(chat_questions)
@@ -537,13 +831,13 @@ class WardenAutomation:
                         f"{Fore.BLUE}  [Q]: {Fore.WHITE}{chosen_message}{Style.RESET_ALL}"
                     )
 
-                    chat_response = await self.execute_agent_stream(wallet_address, thread_identifier, chosen_message, assigned_proxy)
+                    chat_response = await self.execute_agent_stream(wallet_address, thread_identifier, chosen_message)
                     if chat_response:
                         log_message(
                             f"{Fore.MAGENTA}  [A]: {Fore.WHITE}{chat_response}{Style.RESET_ALL}"
                         )
 
-                        submit_chat_result = await self.submit_chat_activity(wallet_address, message_len, assigned_proxy)
+                        submit_chat_result = await self.submit_chat_activity(wallet_address, message_len)
                         if submit_chat_result:
                             activity_id_chat = submit_chat_result.get("activityId", None)
                             if activity_id_chat:
@@ -559,11 +853,11 @@ class WardenAutomation:
                                 )
                 if not ai_chat_completed:
                     log_message(f"{Fore.YELLOW}  Retrying AI Chat...{Style.RESET_ALL}")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(random.randint(10, 30)) # Jeda lebih lama sebelum retry AI chat
 
             if not ai_chat_completed:
                 log_message(f"{Fore.RED}Failed to complete AI Chat activity after multiple attempts.{Style.RESET_ALL}")
-                    
+                        
     async def run_bot_main_loop(self):
         init(autoreset=True)
 
@@ -573,24 +867,24 @@ class WardenAutomation:
             
             self.display_welcome_screen()
             
-            proxy_mode_choice, should_rotate_proxies = self.get_user_choice_for_proxy()
-            use_private_proxy = (proxy_mode_choice == 1)
+            # Panggil dan simpan pilihan proxy ke instance kelas
+            self.use_private_proxy, self.should_rotate_proxies = self.get_user_choice_for_proxy()
 
             chat_questions_list = load_json_data("question_lists.json")
             if not chat_questions_list:
                 log_message(f"{Fore.RED}No Questions Loaded. Please check 'question_lists.json'.{Style.RESET_ALL}")
                 return
 
-            if use_private_proxy:
-                await self.load_proxies_from_file(use_private_proxy)
-                if not self.proxy_list and use_private_proxy:
+            if self.use_private_proxy:
+                await self.load_proxies_from_file() # Tidak perlu parameter
+                if not self.proxy_list and self.use_private_proxy:
                     log_message(f"{Fore.YELLOW}Warning: Private proxy selected, but no proxies found in proxy.txt. Running without proxy.{Style.RESET_ALL}")
-                    use_private_proxy = False
+                    self.use_private_proxy = False # Update status jika tidak ada proxy yang dimuat
 
             while True:
                 self.display_welcome_screen()
                 log_message(f"{Fore.WHITE}Total Accounts: {Fore.CYAN}{len(account_keys)}{Style.RESET_ALL}")
-                log_message(f"{Fore.WHITE}Proxy Rotation: {Fore.CYAN}{'Enabled' if should_rotate_proxies and use_private_proxy else 'Disabled'}{Style.RESET_ALL}\n")
+                log_message(f"{Fore.WHITE}Proxy Rotation: {Fore.CYAN}{'Enabled' if self.should_rotate_proxies and self.use_private_proxy else 'Disabled'}{Style.RESET_ALL}\n")
 
                 for key_entry in account_keys:
                     if key_entry:
@@ -605,52 +899,18 @@ class WardenAutomation:
                             log_message(f"{Fore.BLUE}======================================={Style.RESET_ALL}\n")
                             continue
 
-                        random_user_agent = get_random_user_agent()
+                        # Header tidak perlu diinisialisasi di sini karena sudah di dalam setiap fungsi request
+                        # dan dirotasi per percobaan (per request)
+                        # self.privy_headers_map[wallet_address] = { ... }
+                        # self.core_headers_map[wallet_address] = { ... }
+                        # self.agents_headers_map[wallet_address] = { ... }
 
-                        self.privy_headers_map[wallet_address] = {
-                            "Accept": "application/json",
-                            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-                            "Origin": "https://app.wardenprotocol.org",
-                            "Privy-App-Id": "cm7f00k5c02tibel0m4o9tdy1",
-                            "Privy-Ca-Id": str(uuid.uuid4()),
-                            "Privy-Client": "react-auth:2.13.8",
-                            "Referer": "https://app.wardenprotocol.org/", 
-                            "Sec-Fetch-Dest": "empty",
-                            "Sec-Fetch-Mode": "cors",
-                            "Sec-Fetch-Site": "cross-site",
-                            "Sec-Fetch-Storage-Access": "active",
-                            "User-Agent": random_user_agent
-                        }
-
-                        self.core_headers_map[wallet_address] = {
-                            "Accept": "*/*",
-                            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-                            "Origin": "https://app.wardenprotocol.org",
-                            "Referer": "https://app.wardenprotocol.org/", 
-                            "Sec-Fetch-Dest": "empty",
-                            "Sec-Fetch-Mode": "cors",
-                            "Sec-Fetch-Site": "same-site",
-                            "User-Agent": random_user_agent
-                        }
-
-                        self.agents_headers_map[wallet_address] = {
-                            "Accept": "*/*",
-                            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-                            "Origin": "https://app.wardenprotocol.org",
-                            "Referer": "https://app.wardenprotocol.org/", 
-                            "Sec-Fetch-Dest": "empty",
-                            "Sec-Fetch-Mode": "cors",
-                            "Sec-Fetch-Site": "cross-site",
-                            "User-Agent": random_user_agent,
-                            "X-Api-Key": "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"
-                        }
-
-                        await self.process_wallet_activities(key_entry, wallet_address, chat_questions_list, use_private_proxy, should_rotate_proxies)
+                        await self.process_wallet_activities(key_entry, wallet_address, chat_questions_list) # Hapus parameter proxy
                         log_message(f"{Fore.BLUE}=== Account Processing Finished ==={Style.RESET_ALL}\n")
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(random.randint(5, 15)) # Jeda acak antar akun
 
                 log_message(f"{Fore.GREEN}All accounts processed. Entering cooldown phase...{Style.RESET_ALL}")
-                cooldown_seconds = 24 * 60 * 60
+                cooldown_seconds = 24 * 60 * 60 # 24 jam
                 while cooldown_seconds > 0:
                     formatted_cooldown = format_time_duration(cooldown_seconds)
                     print(
@@ -663,22 +923,13 @@ class WardenAutomation:
                 log_message(f"\n{Fore.GREEN}Initiating next processing cycle...{Style.RESET_ALL}")
 
         except FileNotFoundError:
-            log_message(f"{Fore.RED}Error: 'accounts.txt' file not found. Please create this file with your private keys.{Style.RESET_ALL}")
-            return
+            log_message(f"{Fore.RED}Error: 'accounts.txt' file not found. Please create the file and add your private keys.{Style.RESET_ALL}")
+        except KeyboardInterrupt:
+            log_message(f"\n{Fore.YELLOW}Bot stopped by user.{Style.RESET_ALL}")
         except Exception as e:
-            log_message(f"{Fore.RED}An unexpected error occurred in main loop: {e}{Style.RESET_ALL}")
+            log_message(f"{Fore.RED}An unexpected error occurred: {e}{Style.RESET_ALL}")
 
-if __name__ == "__main__":
-    init(autoreset=True)
-
-    try:
-        bot_instance = WardenAutomation()
-        asyncio.run(bot_instance.run_bot_main_loop())
-    except KeyboardInterrupt:
-        print(
-            f"\n{Fore.RED}>> Bot Terminated by User.{Style.RESET_ALL}                                       "                              
-        )
-    except Exception as e:
-        print(
-            f"\n{Fore.RED}>> An unhandled error occurred: {e}{Style.RESET_ALL}                                       "                              
-        )
+# Contoh cara menjalankan bot (jika ini adalah file utama Anda)
+# if __name__ == "__main__":
+#     bot = WardenAutomation()
+#     asyncio.run(bot.run_bot_main_loop())
